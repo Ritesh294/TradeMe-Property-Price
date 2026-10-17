@@ -1,6 +1,5 @@
 const puppeteer = require('puppeteer');
-const fs = require('fs');
-const csv = require('fast-csv');
+const propertyCache = require('./propertyCache');
 
 
 // Search stages to reduce the number of searches.
@@ -13,10 +12,6 @@ const stageMap = {
   's6': 5000,
   's7': 1000
 }
-var finalPrice = 0;
-var property_address = '';
-var searchResolution = '';
-
 // main page view
 const mainView = (req, res) => {
   if (req.query.valid == "noUrl") {
@@ -38,9 +33,9 @@ const loadingView = (req, res) => {
 const mainSearchFunction = async (req, res) => {
 
   const { property_url, resolution } = req.body;
-  searchResolution = getResolution(resolution);
+  const selectedResolution = getResolution(resolution);
   //---------------------------------------------------------------
-  console.log("Selected Resolution: " + getResolution(resolution));
+  console.log("Selected Resolution: " + selectedResolution);
   //---------------------------------------------------------------
 
   if (!property_url) {
@@ -50,26 +45,25 @@ const mainSearchFunction = async (req, res) => {
     var propertyID = urlSegments[urlSegments.length - 1];
     var propertyType = urlSegments[5];
     var searchUrl = "https://www.trademe.co.nz/a/property/" + propertyType + "/search?search_string=" + propertyID + "*";
-    var existing = await findExisting(propertyID);
+    const existing = await propertyCache.findExisting(propertyID, selectedResolution);
   
     console.time("Time Taken");
 
     if (existing != null) { // if already searched.
-      finalPrice = "$" + new Intl.NumberFormat('en-NZ', { style: 'decimal' }).format(existing[1]);
+      const finalPrice = "$" + new Intl.NumberFormat('en-NZ', { style: 'decimal' }).format(existing.price);
       console.timeEnd("Time Taken");
-      return res.render('property', { price: finalPrice, address: existing[2], listing_url: property_url });
+      return res.render('property', { price: finalPrice, address: existing.address, listing_url: property_url });
     } else {
-      finalPrice = await findProperty(property_url, searchUrl, resolution);
-    }
+      const result = await findProperty(property_url, searchUrl, resolution);
+      console.timeEnd("Time Taken");
 
-    console.timeEnd("Time Taken");
+      if (result.price == 0) {
+        return res.render("search", { alert: "Something went wrong, Please check URL" });
+      }
 
-    if (finalPrice == 0) {
-      return res.render("search", { alert: "Something went wrong, Please check URL" });
-    } else {
-      await addExisting(propertyID);
-      finalPrice = "$" + new Intl.NumberFormat('en-NZ', { style: 'decimal' }).format(finalPrice);
-      return res.render('property', { price: finalPrice, address: property_address, listing_url: property_url });
+      await propertyCache.addExisting(propertyID, result.price, selectedResolution, result.address);
+      const finalPrice = "$" + new Intl.NumberFormat('en-NZ', { style: 'decimal' }).format(result.price);
+      return res.render('property', { price: finalPrice, address: result.address, listing_url: property_url });
     }
   }
 
@@ -81,23 +75,23 @@ async function findProperty(propertyUrl, searchUrl, priceResolution) {
   var gotResult = false;
   var price = 0; // Minumum price for starting search
   var prevPrice = 0;
+  let propertyAddress = '';
   var adjustedSearchUrl = searchUrl + "&price_min=" + price;
   var recentAdjust = true;
   var currentStage = stageMap['s1'];
   const browser = await puppeteer.launch();
-  finalPrice = 0;
 
   // Just obtaining the address here.
   const page = await browser.newPage();
 
   try { // Save Page Title (Address) & Catch errors in provided URL.
     await page.goto(propertyUrl);
-    property_address = await page.title();
+    propertyAddress = await page.title();
     await page.close();
   } catch (err) {
     await page.close();
     await browser.close();
-    return 0;
+    return { price: 0, address: '' };
   }
 
 
@@ -160,7 +154,7 @@ async function findProperty(propertyUrl, searchUrl, priceResolution) {
 
     if (result && i == 0) {
       await browser.close();
-      return 0;
+      return { price: 0, address: '' };
     }
 
     if (result) {
@@ -181,30 +175,7 @@ async function findProperty(propertyUrl, searchUrl, priceResolution) {
   console.log("Final Price: " + price + " : Result = " + getResolution(priceResolution) + " Resolution");
   //-----------------------------------------------------------------------------------------------------
   await browser.close();
-  return price;
-}
-
-async function findExisting(propertyID) {
-  return new Promise((resolve, reject) => {
-    var data = null;
-    csv
-      .parseFile("./data.csv")
-      .on("error", reject)
-      .on("data", (row) => {
-        if (row[0] == propertyID && row[2] == searchResolution) {
-          data = row;
-        }
-      })
-      .on("end", () => {
-        resolve(data);
-      });
-  });
-}
-
-async function addExisting(propertyID) {
-  fs.appendFile('./data.csv', "\n"+propertyID+","+finalPrice+","+searchResolution+","+'"'+property_address+'"', function (err) {
-    if (err) return console.log(err);
- });
+  return { price, address: propertyAddress };
 }
 
 function getResolution(selectedRes) {
