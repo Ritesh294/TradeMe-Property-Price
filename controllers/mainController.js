@@ -148,7 +148,6 @@ async function findProperty(propertyUrl, searchUrl, priceResolution) {
     //-------------------------------------
     const page = await browser.newPage();
     await page.goto(adjustedSearchUrl);
-    console.log(await page.content());
     const result = (await page.content()).includes("No results found");
     await page.close();
 
